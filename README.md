@@ -20,168 +20,96 @@ Given a graph with:
   - Sparse networks (density < 0.8) → Genetic Algorithm
   - Dense networks (density ≥ 0.8) → Hill Climbing
   
-- **Intelligent Mutation Operators**: Smart node insertion with path reconstruction
-- **Trip Count Optimization**: Distribute gold across multiple trips to reduce weight penalties when β > 1
-- **Efficient Cost Evaluation**: Delta-based cost calculation for rapid fitness assessment
+- **Intelligent Mutation Operator**: Smart node insertion with path reconstruction
+- **Trip Count Optimization**: Distribute gold across multiple trips to reduce weight penalties when β > 
+- **Intelligent Crossover Operator**: Change of a segment (a minimal sub path from 0 to 0) with path reconstruction
 
 ---
 
 ## KEY POINTS
 
 ### 1. Fast and Efficient Greedy Population Creation
+* **Shortest Path Precomputation:** All-pairs shortest paths from node 0 are computed using Dijkstra’s algorithm at startup.
+* **Greedy Construction:** To build an individual, the algorithm selects a node where gold has not yet been collected, visits it via the shortest path, and collects gold from any city encountered along the way.
+* **Population Strategy:** This method creates a diverse population for the GA in low-density scenarios. In high-density cases, where greedy solutions tend to converge, a single individual is generated and then refined via Hill Climbing.
+* **Computational Complexity:** This approach ensures a creation time of $O(n)$ per individual.
 
-**Innovation**: Pre-computed shortest path cache enables rapid population initialization
-- Compute all-pairs shortest paths from depot using Dijkstra once at startup
-- Store as `path_list[node]` for O(1) lookup during population creation
-- Randomly select node visitation order to generate diverse initial solutions
-- Greedy approach ensures reasonable solution quality without expensive optimization
+### 2. Insertion Mutation with Optimal Segment Reconstruction
+This multi-step mutation maintains path validity while enabling smart exploration:
+1. Select a random node with an active flag in a segment and identify the next node.
+2. Find the k-nearest neighbors of the next node and connect the current node to a new target via the shortest Dijkstra path.
+3. Deactivate any duplicate gold nodes elsewhere in the path.
+4. **Reconstruct:** If a segment becomes empty, it is removed; otherwise, it is rebuilt by connecting the depot to the first and last active nodes using the initialization paths.
+* **Optimization Benefit:** Instead of random walk mutations, this chooses insertion targets based on proximity, providing the search with a meaningful direction.
 
-**Benefits**:
-- Reduces population creation time from O(n²) to O(n) per individual
-- Enables larger population sizes for better solution space exploration
-- Consistent high-quality initial solutions for GA convergence
 
----
 
-### 2. Intelligent Insertion Mutation with Optimal Segment Reconstruction
+### 3. Crossover with Segment Replacement and Delta-Based Cost
+This operator exchanges segments between parents while maintaining path validity:
+1. Pick a random segment from parent 1 and locate a corresponding segment in parent 2 using a key gold node as an anchor.
+2. Replace parent 2's segment with parent 1's segment, merging the paths.
+3. **Duplicate Management:** Remove gold nodes present in the new segment from their original positions in parent 2, and re-insert any orphaned nodes using the greedy initialization logic.
+4. **Delta Computation:** Calculate cost differences incrementally ($Old - New$) to update the total cost.
+* **Efficiency:** Delta-based cost calculation enables $O(\text{segment})$ complexity instead of requiring a full $O(n)$ recomputation.
 
-**Innovation**: Multi-step mutation that maintains path validity while enabling smart exploration
-
-**Process**:
-1. **Select**: Pick random node with `flag=True` in active segment and identify next node in path
-2. **Insert**: Find k-nearest neighbor of the **next node** (not current), then connect current → new node via shortest Dijkstra path
-3. **Detect Duplicates**: If new node appears elsewhere with `flag=True`, deactivate the duplicate
-4. **Reconstruct**: If segment survives, rebuild it optimally:
-   - Part 1: Connect depot → first active node using Dijkstra
-   - Part 2: Keep intermediate nodes as-is
-   - Part 3: Connect last active node → depot using reversed Dijkstra
-   - If segment becomes empty, remove it completely
-
-**Key Insight**: Instead of random walk mutations, we choose insertion targets based on proximity to the next node in the path, giving Dijkstra a meaningful direction. This ensures efficient bridging between existing path segments while maintaining high solution quality.
-
-**Benefits**:
-- Guarantees zero duplicate nodes (critical constraint)
-- Maintains path validity and connectivity
-- Fast local search without expensive global recomputation
-- Delta costs enable efficient fitness updates
-
----
-
-### 3. Trip Mutation: Efficient Weight Distribution Optimization
-
-**Innovation**: Deferred trip count optimization using lightweight mutation
-
-**Concept**:
-- Path is computed once with single-trip structure: (0) → visited_nodes → (0)
-- Trip counts stored as separate list: `trip_counts[segment_idx]` = number of times to traverse that segment
-- Final conversion multiplies path by trip counts during solution assembly
-
-**Algorithm**:
-1. **Initialization**: Start with trip_counts = [1, 1, 1, ...]
-2. **Radical Phase**: Multiply all counts simultaneously to test benefit
-3. **Hill Climbing Phase**: Randomly select segment and multiply its trip count
-4. **Acceptance**: Accept if delta_cost < 0
-
-**Benefits**:
-- Decouples path structure from trip distribution
-- O(1) trip mutation vs. O(n) path modification
-- Enables fine-tuned weight distribution without path reshuffling
-- When β > 1, dividing gold across trips significantly reduces total cost
-
----
-
-### 4. Efficient Delta-Based Cost Calculation
-
-**Innovation**: Incremental cost evaluation instead of full path recomputation when possible. I have successfully implemented it on the trip mutation and on the crossover. However, given the complexity of shift of index in the mutation and the change of different part of the path, i didnt implement it on the principal mutation. This choice was also done because the advantage wouldnt be so great because i have to calculate it on the new path
-
-**Standard Approach** (❌ Slow):
-```
-cost_before = calculate_full_path_cost(path_before)
-cost_after = calculate_full_path_cost(path_after)
-delta = cost_after - cost_before
-```
-Full path traversal: O(n) per mutation evaluation
-
-**Our Approach** (✅ Fast):
-```
-delta = cost_after - cost_before  # Pre-calculated during mutation
-# Use delta directly in fitness: new_fitness = old_fitness + delta
-```
-
-**Benefits**:
-- Avoids redundant path traversal (80% of path unchanged)
-- O(modified_segment) instead of O(n) evaluation time
-- Enables 10-100x faster GA generations
-- Mutation operators return delta costs directly from modification
+### 4. Trip Mutation: Weight Distribution Optimization
+If the parameter $\beta > 1$, it is often beneficial to perform multiple trips along the same path.
+* **Data Structure:** The path structure is computed once, while trip counts are stored separately in the `trip_counts` list.
+* **Radical Phase:** All trip counts are multiplied simultaneously to test for a global benefit.
+* **Refinement Phase:** A random segment is selected and its trip count is modified via Hill Climbing.
+* **Local Acceptance:** The modification is accepted only if the specific segment's cost improves, avoiding full path recomputation.
 
 ---
 
 ## Implementation Details
 
+
 ### Main Components
 
 - **`adaptive_solver()`**: Orchestrator - selects GA or HC based on density
-- **`genetic_algorithm()`**: Population-based search with adaptive tournament and crossover
+- **`genetic_algorithm()`**: Population-based search with adaptive tournament selection and recombination
 - **`hill_climbing()`**: Local search from greedy initialization
-- **`mutation_neighbor_of_next_insertion_only()`**: Core insertion mutation with duplicate detection
+- **`choice_a_path()` + `neighborhood_greedy_strategy_dijistra()`**: Greedy population initialization with pre-computed shortest paths from depot
+- **`mutation_neighbor_of_next_insertion_only()`**: Core insertion mutation with segment reconstruction and duplicate detection
+- **`crossover_zero_paths_with_delta()`**: Intelligent segment exchange operator with path merging and cost delta calculation
 - **`run_hill_climbing_trips()`**: Trip count optimization via hill climbing
 
-### Execution Flow
+#### Hyperparameter Configuration Strategy
 
-```
-Input: Problem instance (n nodes, density, α, β)
-       ↓
-Density < 0.8? 
-   ├─→ YES: Genetic Algorithm (population × generations)
-   └─→ NO:  Hill Climbing (population_size × n_generations iterations)
-       ↓
-Is β > 1?
-   ├─→ YES: Optimize trip counts with HC (n_trip_count_hc iterations)
-   └─→ NO:  Keep single-trip solution
-       ↓
-Output: (best_path, trip_counts, final_cost)
-```
+To achieve a balance between solution quality and computational efficiency, the solver employs adaptive hyperparameters that scale with problem size:
 
-### Parameters (Auto-Tuned by Problem Size)
+- **Population Size**: Small populations for large problems reduce computational cost while maintaining solution space exploration
+- **Generations**: Fewer generations for larger problems since computational cost per evaluation increases with path length
+- **Trip Count Iterations**: Dedicated iterations for weight distribution optimization when β > 1
 
-#### Population Size Estimation
+This adaptive approach ensures that even with relatively modest computational budgets for large instances, the solver achieves competitive solution quality.
 
-`population_size = 25 - (n - 100) / 56` (doubled for sparse graphs)
+#### Hyperparameter Values by Problem Size
 
-| Problem Size (n) | Population | Population (Sparse ×2) |
-|------------------|-----------|------------------------|
-| **100** | 25 | 50 |
-| **300** | ~22 | ~44 |
-| **600** | ~16 | ~32 |
-| **1000** | ~9 | ~18 |
+| Problem Size (n) | Population | Generations | Trip Count HC |
+|------------------|-----------|------------|---------------|
+| **100** | 25-50 | 80 | 100 |
+| **1000** | 9-18 | 30 | 500 |
 
-**Rationale**: Smaller populations for large problems reduce computational cost while maintaining diversity for solution space exploration.
+**Note**: 
+- Population formula: `population_size = 25 - (n - 100) / 56` (doubled for sparse graphs with density < 0.8)
+- Generations formula: `n_generations = 80 - (n - 100) / 18`
+- Trip Count HC: `n_trip_count_hc = n` (halved if n ≥ 800)
 
-#### Generations Estimation
+### Adaptive GA Control Parameters
 
-`n_generations = 80 - (n - 100) / 18`
+The genetic algorithm employs **dynamic control parameters** that evolve during the search to balance exploration and exploitation:
 
-| Problem Size (n) | Generations | Total Evaluations (GA) | Total Evaluations (HC) |
-|------------------|------------|------------------------|------------------------|
-| **100** | 80 | 25 × 80 = 2,000 | 25 × 80 = 2,000 |
-| **300** | ~69 | 22 × 69 ≈ 1,518 | 22 × 69 ≈ 1,518 |
-| **600** | ~52 | 16 × 52 ≈ 832 | 16 × 52 ≈ 832 |
-| **1000** | ~30 | 9 × 30 = 270 | 9 × 30 = 270 |
+#### Tournament Selection Pressure
+- **Range**: Tournament size increases from 2 to 6 across generations
+- **Effect**: Selective pressure gradually increases, favoring stronger individuals in later generations
+- **Rationale**: Early generations preserve diversity; later stages focus on exploitation of promising regions
 
-**Rationale**: Generation count decreases as problem size increases because:
-- Larger graphs have more natural structure and less need for extended search
-- Computational cost per evaluation increases with path length
-- Balanced tradeoff: maintain total evaluations while respecting time constraints
-- Hill Climbing uses same generation count as population (iterations = population_size × n_generations)
+#### Adaptive Crossover Probability
+- **Initial Rate**: Low base crossover probability (0.1)
+- **Dynamic Adjustment**: Probability increases during search stagnation to encourage exploration
 
-#### Trip Count Hill Climbing
-
-`n_trip_count_hc = n` (halved if n ≥ 800)
-
-- Provides dedicated iterations for weight distribution optimization when β > 1
-- Scales with problem size since larger paths have more segments to optimize
-- Efficient focus on trip multipliers rather than path structure
-
+The GA prioritizes **mutation as the primary exploration mechanism** rather than following traditional GA conventions; mutation is typically classified as an exploitation operator,but in this case introduces significant path novelty by intelligently repositioning nodes. On the other hand the crossover recombine segments from high-quality solutions
 
 
 ## Performance Analysis by Beta Factor
@@ -194,30 +122,9 @@ The solver's effectiveness varies significantly with the β parameter, which con
 | **1.0** | Linear weight scaling | ~0.04% | Single-trip solution already near-optimal |
 | **2.0** | Quadratic weight penalty | ~98.9% |  Multiple trips dramatically reduce cost |
 
-### Beta Performance Details
+### Experiment Results
 
-- **β = 0.5** (Weak Penalty):
-  - Weight has minimal impact on total cost
-  - Path structure is the primary optimization target
-  - Trip count multiplication offers limited benefit (~5-10% improvement)
-  - Hill Climbing converges quickly
+![Experiment Results Table](src/Report_experiment.png)
 
-- **β = 1.0** (Linear Penalty):
-  - Weight penalty scales linearly with distance
-  - Balanced tradeoff between path quality and trip optimization
-  - Trip count optimization useful (~15-20% additional gain)
-  - GA population diversity becomes important
+The table above presents comprehensive experimental results across different problem densities (ρ), problem sizes (n), and beta parameters (β), comparing the baseline solution quality against the solver's performance.
 
-- **β = 2.0** (Quadratic Penalty):
-  - Weight penalty grows quadratically → dominates total cost
-  - **Trip count optimization is essential**: Dividing gold across multiple trips yields 20-35% additional improvement
-  - Small improvements in weight distribution significantly impact final cost
-  - Higher computational cost justified by substantial gains
-  - Dense graphs benefit most from trip-based optimization
-
-### Recommendation
-
-- For **β ≤ 1.0**: Focus on path quality; run GA/HC with standard iterations
-- For **β > 1.0**: Invest extra iterations in trip count optimization (increase `n_trip_count_hc` parameter)
-
----

@@ -210,6 +210,42 @@ def apply_insertion(segment, idx_rel, new_node, graph):
     return new_segment
 
 
+def smart_concatenate(*segments):
+    """Smart concatenation: avoid consecutive depots during merge
+    If segment ends with (0, False) and next starts with (0, False), remove duplicate
+    Otherwise ensure depot separator (0, False) between segments"""
+    if not segments:
+        return []
+    
+    result = list(segments[0]) if segments[0] else []
+    
+    for i in range(1, len(segments)):
+        segment = segments[i] if segments[i] else []
+        
+        if not segment:
+            continue
+        
+        if result:
+            # Check junction points
+            result_ends_depot = result[-1][0] == 0
+            segment_starts_depot = segment[0][0] == 0
+            
+            if result_ends_depot and segment_starts_depot:
+                # Both have depot: remove duplicate, keep only one
+                result.extend(segment[1:])
+            elif result_ends_depot or segment_starts_depot:
+                # One has depot: just concatenate
+                result.extend(segment)
+            else:
+                # Neither has depot: add separator (0, False)
+                result.append((0, False))
+                result.extend(segment)
+        else:
+            result.extend(segment)
+    
+    return result
+
+
 def mutation_neighbor_of_next_insertion_only(path, problem_instance, path_list, neighbor_distance_cache, graph):
     """Core mutation operator: insert k-nearest neighbor into random segment"""
     new_path = path.copy()
@@ -312,7 +348,7 @@ def mutation_neighbor_of_next_insertion_only(path, problem_instance, path_list, 
                 seg.append((node, False))
             seg.append((0, False))
             
-            new_path = new_path[:start_index] + seg + new_path[end_index + 1:]
+            new_path = smart_concatenate(new_path[:start_index], seg, new_path[end_index + 1:])
         
     infeas_before, cost_before = calculate_full_path_cost_final(problem_instance, path)
     infeas_after, cost_after = calculate_full_path_cost_final(problem_instance, new_path)
@@ -340,13 +376,11 @@ def get_trip_boundaries(path, cache=None):
     boundaries = []
     trip_start = 0
     
-    for i, (node, _) in enumerate(path):
-        if node == 0 and i > 0:
-            boundaries.append((trip_start, i))
-            trip_start = i
-    
-    if trip_start < len(path):
-        boundaries.append((trip_start, len(path) - 1))
+    # Mark (start, end) indices for each trip (returns to depot at node 0)
+    for i in range(len(path) - 1):  # Escludi l'ultimo elemento (depot finale)
+        if path[i+1][0] == 0:  # Return to depot
+            boundaries.append((trip_start, i+1))
+            trip_start = i + 1
     
     return boundaries
 
@@ -449,11 +483,12 @@ def crossover_zero_paths_with_delta(parent1, parent2, possible_paths, problem_in
         if len(res_append) > 2: 
             infeas_nodes.extend(res_append[2])
 
-    new_individual = (
-        p2_working[:start_index_2] + 
-        segment_p1 +
-        p2_working[end_index_2+1:] +
-        new_path_append[1:]
+    # Construct new individual using smart concatenation to avoid consecutive depots
+    new_individual = smart_concatenate(
+        p2_working[:start_index_2],
+        segment_p1,
+        p2_working[end_index_2+1:],
+        new_path_append[1:] if new_path_append else []
     )
     
     return new_individual, (delta_infeas, delta_cost, infeas_nodes)
